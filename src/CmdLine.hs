@@ -21,7 +21,7 @@ import Language.Haskell.GhclibParserEx.GHC.Driver.Session as GhclibParserEx
 import GHC.Driver.Session hiding (verbosity)
 
 import Language.Preprocessor.Cpphs
-import System.Console.ANSI(hSupportsANSIWithoutEmulation)
+import System.Console.ANSI(hSupportsANSI)
 import System.Console.CmdArgs.Explicit(helpText, HelpFormat(..))
 import System.Console.CmdArgs.Implicit
 import System.Directory.Extra
@@ -231,9 +231,7 @@ cmdUseColour :: Cmd -> IO Bool
 cmdUseColour cmd = case cmdColor cmd of
   Always -> pure True
   Never  -> pure False
-  Auto   -> do
-    supportsANSI <- hSupportsANSIWithoutEmulation stdout
-    pure $ Just True == supportsANSI
+  Auto   -> hSupportsANSI stdout
 
 
 "." <\> x = x
