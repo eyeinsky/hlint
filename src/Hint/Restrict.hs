@@ -133,8 +133,8 @@ noteMayBreak :: Note
 noteMayBreak = Note "may break the code"
 
 -- | Test if modu.func appears in the @withins@ list.
-within :: String -> String -> [(String, String)] -> Bool
-within modu func withins = any predicate withins
+isWithin :: (String, String) -> [(String, String)] -> Bool
+isWithin (modu, func) whitelist = any predicate whitelist
   where
     (~=) = wildcardMatch
     predicate (modu', func') = (modu' ~= modu || modu' == "")  -- module name matches
@@ -159,7 +159,7 @@ checkPragmas modu flags exts mps =
      , let note = maybe noteMayBreak Note . (=<<) riMessage . flip Map.lookup mp
      , let notes w = w {ideaNote=note <$> bad}
      , not $ null bad]
-   isGood def mp x = maybe def (within modu "" . riWithin) $ Map.lookup x mp
+   isGood def mp x = maybe def (isWithin (modu, "") . riWithin) $ Map.lookup x mp
 
 checkImports :: String -> [LImportDecl GhcPs] -> (Bool, Map.Map String RestrictItem) -> [Idea]
 checkImports modu lImportDecls (def, mp) = mapMaybe getImportHint lImportDecls
@@ -168,7 +168,7 @@ checkImports modu lImportDecls (def, mp) = mapMaybe getImportHint lImportDecls
     getImportHint i@(L _ ImportDecl{..}) = do
       let RestrictItem{..} = getRestrictItem def ideclName mp
       either (Just . ideaMessage riMessage) (const Nothing) $ do
-        unless (within modu "" riWithin) $
+        unless ((modu, "") `isWithin` riWithin) $
           Left $ ideaNoTo $ warn "Avoid restricted module" (reLoc i) (reLoc i) []
 
         let importedIdents = Set.fromList $
