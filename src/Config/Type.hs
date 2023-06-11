@@ -124,7 +124,12 @@ instance ToJSON HintRule where
         , "rhs" .= show hintRuleRHS
         ]
 
-data RestrictType = RestrictModule | RestrictExtension | RestrictFlag | RestrictFunction deriving (Show,Eq,Ord)
+data RestrictType
+  = RestrictModule
+  | RestrictExtension
+  | RestrictFlag
+  | RestrictFunction
+  deriving (Show,Eq,Ord)
 
 data RestrictIdents
     = NoRestrictIdents -- No restrictions on module imports

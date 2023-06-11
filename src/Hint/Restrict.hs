@@ -1,4 +1,5 @@
 {-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -63,10 +64,52 @@ restrictHint settings scope m =
         exts = languagePragmas ps in
     checkPragmas modu opts exts rOthers ++
     maybe [] (checkImports modu $ hsmodImports (unLoc (ghcModule m))) (Map.lookup RestrictModule rOthers) ++
+
+
+    -- | functions
     checkFunctions scope modu (hsmodDecls (unLoc (ghcModule m))) rFunction
+
     where
         modu = modName (ghcModule m)
-        (rFunction, rOthers) = restrictions settings
+
+        (rfs', ros) = partition
+          ((== RestrictFunction) . fst)
+          [(restrictType x, x) | SettingRestrict x <- settings]
+
+        rfs :: [Restrict]
+        rfs = map snd rfs'
+
+        rFunction :: Same (Bool, Map.Map String RestrictFunction) RestrictFunctions
+        rFunction =
+          ( all restrictDefault (rfs :: [Restrict]) :: Bool --
+          , Map.fromListWith (<>) [mkRf s r | r <- rfs, s <- restrictName r]
+          )
+
+        mkRf :: String -> Restrict -> (String, RestrictFunction)
+        mkRf s Restrict{..} =
+          ( name
+          , RestrictFun $ Map.singleton modu (restrictWithin, restrictMessage)
+          )
+          where
+            -- Parse module and name from s. module = Nothing if the rule is unqualified.
+            (modu, name) = first (fmap NonEmpty.init . NonEmpty.nonEmpty) (breakEnd (== '.') s)
+
+        -- | Others
+
+        rOthers = Map.map f $ Map.fromListWith (++) (map (second pure) ros)
+        f rs = (all restrictDefault rs
+               ,Map.fromListWith (<>)
+                  [(,) s RestrictItem
+                    { riAs             = restrictAs
+                    , riAsRequired     = restrictAsRequired
+                    , riImportStyle    = restrictImportStyle
+                    , riQualifiedStyle = restrictQualifiedStyle
+                    , riWithin         = restrictWithin
+                    , riRestrictIdents = restrictIdents
+                    , riMessage        = restrictMessage
+                    }
+                  | Restrict{..} <- rs, s <- restrictName])
+
 
 ---------------------------------------------------------------------
 -- UTILITIES
@@ -97,30 +140,6 @@ instance Semigroup RestrictFunction where
 
 type RestrictFunctions = (Bool, Map.Map String RestrictFunction)
 type OtherRestrictItems = Map.Map RestrictType (Bool, Map.Map String RestrictItem)
-
-restrictions :: [Setting] -> (RestrictFunctions, OtherRestrictItems)
-restrictions settings = (rFunction, rOthers)
-    where
-        (map snd -> rfs, ros) = partition ((== RestrictFunction) . fst) [(restrictType x, x) | SettingRestrict x <- settings]
-        rFunction = (all restrictDefault rfs, Map.fromListWith (<>) [mkRf s r | r <- rfs, s <- restrictName r])
-        mkRf s Restrict{..} = (name, RestrictFun $ Map.singleton modu (restrictWithin, restrictMessage))
-          where
-            -- Parse module and name from s. module = Nothing if the rule is unqualified.
-            (modu, name) = first (fmap NonEmpty.init . NonEmpty.nonEmpty) (breakEnd (== '.') s)
-
-        rOthers = Map.map f $ Map.fromListWith (++) (map (second pure) ros)
-        f rs = (all restrictDefault rs
-               ,Map.fromListWith (<>)
-                  [(,) s RestrictItem
-                    { riAs             = restrictAs
-                    , riAsRequired     = restrictAsRequired
-                    , riImportStyle    = restrictImportStyle
-                    , riQualifiedStyle = restrictQualifiedStyle
-                    , riWithin         = restrictWithin
-                    , riRestrictIdents = restrictIdents
-                    , riMessage        = restrictMessage
-                    }
-                  | Restrict{..} <- rs, s <- restrictName])
 
 ideaMessage :: Maybe String -> Idea -> Idea
 ideaMessage (Just message) w = w{ideaNote=[Note message]}
@@ -261,15 +280,32 @@ importListToIdents =
     fromId (Exact _)  = Nothing
 
 checkFunctions :: Scope -> String -> [LHsDecl GhcPs] -> RestrictFunctions -> [Idea]
-checkFunctions scope modu decls (def, mp) =
-    [ (ideaMessage message $ ideaNoTo $ warn "Avoid restricted function" (reLocN x) (reLocN x) []){ideaDecl = [dname]}
-    | d <- decls
-    , let dname = fromMaybe "" (declName d)
-    , x <- universeBi d :: [LocatedN RdrName]
-    , let xMods = possModules scope x
-    , let (withins, message) = fromMaybe ([("","") | def], Nothing) (findFunction mp x xMods)
-    , not $ within modu dname withins
-    ]
+checkFunctions scope modu decls (def, restrictMap) = do
+  d <- decls
+  x <- universeBi d :: [LocatedN RdrName]
+  let dname = fromMaybe "" (declName d) :: String
+      xPossibleModuleNames = possModules scope x :: [ModuleName]
+      -- ^ possible module names for x
+
+      whitelist, blacklist :: [(String, String)]
+
+      (whitelist, message) = case findFunction restrictMap x xPossibleModuleNames of
+        Just a -> a
+        Nothing -> let list = if def then [("","")] else []
+                   in (list, Nothing)
+
+      (blacklist, message') = case findFunction restrictMap x xPossibleModuleNames of
+        Just a -> a
+        Nothing -> let list = if def then [("","")] else []
+                   in (list, Nothing)
+
+  guard $
+       (not $ (modu, dname) `isWithin` whitelist) -- when function is not within the listed modules
+    || (modu, dname) `isWithin` blacklist
+
+  pure $
+    (ideaMessage message $ ideaNoTo $ warn "Avoid restricted function" (reLocN x) (reLocN x) [])
+    { ideaDecl = [dname] }
 
 -- Returns Just iff there are rules for x, which are either unqualified, or qualified with a module that is
 -- one of x's possible modules.
@@ -277,10 +313,14 @@ checkFunctions scope modu decls (def, mp) =
 -- withins and messages are concatenated with (<>).
 findFunction
     :: Map.Map String RestrictFunction
+    -- newtype RestrictFunction = RestrictFun (Map.Map (Maybe String) ([(String, String)], Maybe String))
     -> LocatedN RdrName
     -> [ModuleName]
     -> Maybe ([(String, String)], Maybe String)
 findFunction restrictMap (rdrNameStr -> x) (map moduleNameString -> possMods) = do
     (RestrictFun mp) <- Map.lookup x restrictMap
-    n <- NonEmpty.nonEmpty . Map.elems $ Map.filterWithKey (const . maybe True (`elem` possMods)) mp
+    let _ = mp :: Map.Map (Maybe String) ([(String, String)], Maybe String)
+    n <- NonEmpty.nonEmpty . Map.elems $ Map.filterWithKey (\k _ -> maybe True (`elem` possMods) k) mp
     pure (sconcat n)
+
+type Same a b = (a ~ b) => a
