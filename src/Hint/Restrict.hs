@@ -132,9 +132,13 @@ ideaNoTo w = w{ideaTo=Nothing}
 noteMayBreak :: Note
 noteMayBreak = Note "may break the code"
 
+-- | Test if modu.func appears in the @withins@ list.
 within :: String -> String -> [(String, String)] -> Bool
-within modu func = any (\(a,b) -> (a ~= modu || a == "") && (b ~= func || b == ""))
-  where (~=) = wildcardMatch
+within modu func withins = any predicate withins
+  where
+    (~=) = wildcardMatch
+    predicate (modu', func') = (modu' ~= modu || modu' == "")  -- module name matches
+                            && (func' ~= func || func' == "") -- function name matches
 
 ---------------------------------------------------------------------
 -- CHECKS
