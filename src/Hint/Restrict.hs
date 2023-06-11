@@ -137,7 +137,7 @@ isWithin :: (String, String) -> [(String, String)] -> Bool
 isWithin (modu, func) whitelist = any predicate whitelist
   where
     (~=) = wildcardMatch
-    predicate (modu', func') = (modu' ~= modu || modu' == "")  -- module name matches
+    predicate (modu', func') = (modu' ~= modu || modu' == "") -- module name matches
                             && (func' ~= func || func' == "") -- function name matches
 
 ---------------------------------------------------------------------
